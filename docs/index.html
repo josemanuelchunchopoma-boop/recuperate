@@ -1,0 +1,1298 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Que te mejores pronto</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Permanent+Marker&family=Nunito:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  html, body {
+    margin: 0; height: 100%; overflow: hidden;
+    background: #070b1c;
+    font-family: 'Nunito', system-ui, sans-serif;
+  }
+  canvas { display: block; }
+  #mensaje {
+    position: fixed; top: 22px; left: 50%; transform: translateX(-50%);
+    width: min(94vw, 900px); text-align: center; pointer-events: none;
+    font-family: 'Permanent Marker', cursive;
+    font-size: clamp(22px, 4.2vw, 46px); line-height: 1.15;
+    color: #ffe14d;
+    text-shadow: 0 0 14px rgba(255, 60, 60, .55), 0 3px 0 rgba(0, 0, 0, .6);
+    opacity: 0; transition: opacity 1s;
+  }
+  #ayuda {
+    position: fixed; left: 16px; bottom: 16px; color: #dfe3ff; opacity: .75;
+    font-size: 13px; line-height: 1.55; pointer-events: none; text-shadow: 0 1px 4px #000;
+  }
+  #botones {
+    position: fixed; right: 16px; bottom: 16px; display: flex; gap: 8px;
+    flex-wrap: wrap; justify-content: flex-end; max-width: 70vw;
+  }
+  #botones button {
+    font-family: inherit; font-weight: 700; font-size: 14px; color: #fff; cursor: pointer;
+    background: rgba(20, 16, 30, .6); border: 2px solid #c8102e; border-radius: 999px;
+    padding: 8px 16px; backdrop-filter: blur(6px); transition: background .2s, transform .1s;
+  }
+  #botones button:hover { background: rgba(200, 16, 46, .55); }
+  #botones button:active { transform: scale(.95); }
+  #cargando {
+    position: fixed; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center;
+    background: #070b1c; color: #ffe14d; font-family: 'Permanent Marker', cursive; font-size: 28px;
+    transition: opacity 1.5s;
+  }
+  @media (max-width: 640px) { #ayuda { display: none; } }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="cargando">🐱 preparando tecito…</div>
+<div id="mensaje"></div>
+<div id="ayuda">
+  🖱️ Arrastra para mirar · Rueda para acercar<br>
+  🐱 Haz clic en el gatito, el té, los pañuelos,<br>
+  &nbsp;&nbsp;&nbsp;&nbsp;el tocadiscos o el amplificador
+</div>
+<div id="botones">
+  <button id="btnMusica">🎸 Poner música</button>
+  <button id="btnAchu">🤧 ¡Achú!</button>
+  <button id="btnGiro">⟳ Giro: No</button>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+// Para personalizar: abre la página con ?nombre=TuNombre al final de la dirección
+const NOMBRE = new URLSearchParams(location.search).get('nombre') || '';
+
+await document.fonts.ready;
+
+// ---------------------------------------------------------------------------
+// Utilidades
+// ---------------------------------------------------------------------------
+const rand = (a, b) => a + Math.random() * (b - a);
+const clamp01 = (v) => Math.min(1, Math.max(0, v));
+const smooth = (v) => { v = clamp01(v); return v * v * (3 - 2 * v); };
+
+function canvasTex(w, h, draw, repeat) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  if (repeat) { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(repeat[0], repeat[1]); }
+  return t;
+}
+const glowTex = canvasTex(128, 128, (g) => {
+  const gr = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.3, 'rgba(255,255,255,0.5)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 128, 128);
+});
+const smokeTex = canvasTex(128, 128, (g) => {
+  const gr = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  gr.addColorStop(0, 'rgba(255,255,255,0.6)'); gr.addColorStop(0.5, 'rgba(255,255,255,0.2)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 128, 128);
+});
+
+function textSprite(text, { size = 72, color = '#ffffff', stroke = 'rgba(0,0,0,0.65)', font = 'Permanent Marker', height = 0.32 } = {}) {
+  const fontStr = `${size}px "${font}", "Segoe UI Emoji", "Apple Color Emoji", sans-serif`;
+  const c = document.createElement('canvas');
+  const g = c.getContext('2d');
+  g.font = fontStr;
+  const w = Math.ceil(g.measureText(text).width + size);
+  c.width = w; c.height = Math.ceil(size * 1.6);
+  g.font = fontStr;
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.lineWidth = size * 0.14; g.lineJoin = 'round'; g.strokeStyle = stroke;
+  g.strokeText(text, w / 2, c.height / 2);
+  g.fillStyle = color;
+  g.fillText(text, w / 2, c.height / 2);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, transparent: true, depthWrite: false }));
+  s.scale.set(height * w / c.height, height, 1);
+  s.renderOrder = 10;
+  return s;
+}
+
+// ---------------------------------------------------------------------------
+// Renderizador, escena, cámara
+// ---------------------------------------------------------------------------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const BG = new THREE.Color(0x070b1c);
+scene.background = BG.clone();
+
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.05, 300);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.minDistance = 1.6;
+controls.maxDistance = 6.5;
+controls.minPolarAngle = 0.45;
+controls.maxPolarAngle = 1.48;
+controls.minAzimuthAngle = -0.8;
+controls.maxAzimuthAngle = 1.1;
+controls.autoRotateSpeed = 0.5;
+controls.enabled = false;
+
+// Entrada: desde la lluvia, afuera, la cámara atraviesa la ventana hasta el gatito
+const CAT_TARGET = new THREE.Vector3(0.1, 0.72, 0);
+const intro = {
+  active: true, t: 0, dur: 9,
+  p: [new THREE.Vector3(0, 2.3, -16), new THREE.Vector3(0, 2.3, -6), new THREE.Vector3(0.5, 2.0, 1.5), new THREE.Vector3(1.9, 1.55, 2.9)],
+  q: [new THREE.Vector3(0, 1.4, 0), new THREE.Vector3(0, 1.0, 0), CAT_TARGET, CAT_TARGET]
+};
+function bezier(arr, k, out) {
+  const u = 1 - k;
+  return out.set(0, 0, 0)
+    .addScaledVector(arr[0], u * u * u).addScaledVector(arr[1], 3 * u * u * k)
+    .addScaledVector(arr[2], 3 * u * k * k).addScaledVector(arr[3], k * k * k);
+}
+camera.position.copy(intro.p[0]);
+controls.target.copy(intro.q[0]);
+camera.lookAt(controls.target);
+
+// ---------------------------------------------------------------------------
+// Luces
+// ---------------------------------------------------------------------------
+scene.add(new THREE.HemisphereLight(0xa8b0ff, 0x403028, 0.75));
+const lamp = new THREE.SpotLight(0xffc48a, 45, 0, 0.62, 0.65, 2);
+lamp.position.set(2.2, 3.8, 2.2);
+lamp.target.position.set(0, 0.4, 0);
+lamp.castShadow = true;
+lamp.shadow.mapSize.set(1024, 1024);
+lamp.shadow.bias = -0.0004;
+scene.add(lamp, lamp.target);
+const warm = new THREE.PointLight(0xff7040, 5, 9, 2);
+warm.position.set(0, 3.3, -3.2);
+scene.add(warm);
+const moonLight = new THREE.DirectionalLight(0x6a8cff, 0.6);
+moonLight.position.set(-3, 6, -10);
+scene.add(moonLight);
+
+// ---------------------------------------------------------------------------
+// Afuera: ciudad nocturna, luna y lluvia
+// ---------------------------------------------------------------------------
+{
+  const winTex = canvasTex(64, 64, (g) => {
+    g.fillStyle = '#0a0f24'; g.fillRect(0, 0, 64, 64);
+    for (let x = 0; x < 4; x++) for (let y = 0; y < 4; y++) {
+      g.fillStyle = Math.random() < 0.35 ? (Math.random() < 0.5 ? '#ffd27a' : '#ff9a5a') : '#151b36';
+      g.fillRect(x * 16 + 4, y * 16 + 4, 8, 9);
+    }
+  }, [1, 1]);
+  const mat = new THREE.MeshBasicMaterial({ map: winTex });
+  for (let i = 0; i < 46; i++) {
+    const w = rand(2, 5), h = rand(3, 15), d = rand(2, 4);
+    const geo = new THREE.BoxGeometry(w, h, d);
+    const uv = geo.attributes.uv;
+    for (let k = 0; k < uv.count; k++) uv.setXY(k, uv.getX(k) * w / 2.5, uv.getY(k) * h / 2.5);
+    const b = new THREE.Mesh(geo, mat);
+    b.position.set(rand(-34, 34), h / 2 - 1, rand(-22, -48));
+    scene.add(b);
+  }
+  const moon = new THREE.Mesh(new THREE.CircleGeometry(2.2, 48), new THREE.MeshBasicMaterial({ color: new THREE.Color(1, 0.96, 0.85).multiplyScalar(2) }));
+  moon.position.set(-9, 13, -60);
+  scene.add(moon);
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: 0x8899ff, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false }));
+  halo.scale.set(22, 22, 1);
+  halo.position.copy(moon.position);
+  scene.add(halo);
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), new THREE.MeshStandardMaterial({ color: 0x0b0f1e, roughness: 0.3, metalness: 0.4 }));
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.y = -1;
+  scene.add(ground);
+}
+const RAIN = 1600;
+const rainPos = new Float32Array(RAIN * 6);
+const rainSpd = new Float32Array(RAIN);
+for (let i = 0; i < RAIN; i++) {
+  const x = rand(-14, 14), y = rand(-1, 14), z = rand(-4.6, -30);
+  rainPos.set([x, y, z, x - 0.03, y - 0.4, z], i * 6);
+  rainSpd[i] = rand(9, 13);
+}
+const rainGeo = new THREE.BufferGeometry();
+rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPos, 3));
+const rain = new THREE.LineSegments(rainGeo, new THREE.LineBasicMaterial({ color: 0x8fa8ff, transparent: true, opacity: 0.45 }));
+rain.frustumCulled = false;
+scene.add(rain);
+function updateRain(dt) {
+  for (let i = 0; i < RAIN; i++) {
+    const o = i * 6;
+    let y = rainPos[o + 1] - rainSpd[i] * dt;
+    if (y < -1) y = rand(12, 14);
+    rainPos[o + 1] = y;
+    rainPos[o + 4] = y - 0.4;
+  }
+  rainGeo.attributes.position.needsUpdate = true;
+}
+
+// ---------------------------------------------------------------------------
+// La habitación
+// ---------------------------------------------------------------------------
+const wallMat = new THREE.MeshStandardMaterial({
+  map: canvasTex(256, 256, (g) => {
+    g.fillStyle = '#3a2d55'; g.fillRect(0, 0, 256, 256);
+    g.fillStyle = 'rgba(255,255,255,0.035)';
+    for (let x = 0; x < 256; x += 32) g.fillRect(x, 0, 14, 256);
+  }, [6, 3]),
+  roughness: 0.95
+});
+function box(w, h, d, mat, x, y, z) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  m.position.set(x, y, z);
+  m.receiveShadow = true;
+  scene.add(m);
+  return m;
+}
+// Pared del fondo con hueco de ventana
+box(4.2, 4.2, 0.2, wallMat, -3.4, 2.1, -4.1);
+box(4.2, 4.2, 0.2, wallMat, 3.4, 2.1, -4.1);
+box(2.6, 1.4, 0.2, wallMat, 0, 0.7, -4.1);
+box(2.6, 1.0, 0.2, wallMat, 0, 3.7, -4.1);
+// Pared izquierda
+box(0.2, 4.2, 9.2, wallMat, -5.6, 2.1, 0.5);
+// Marco y alféizar
+{
+  const frameMat = new THREE.MeshStandardMaterial({ color: 0x1d1426, roughness: 0.6 });
+  box(2.8, 0.12, 0.34, frameMat, 0, 3.2, -4.05);
+  box(2.8, 0.12, 0.34, frameMat, 0, 1.4, -4.05);
+  box(0.12, 1.9, 0.34, frameMat, -1.34, 2.3, -4.05);
+  box(0.12, 1.9, 0.34, frameMat, 1.34, 2.3, -4.05);
+  box(3.0, 0.08, 0.4, frameMat, 0, 1.36, -3.82);
+  // Vidrio con gotitas
+  const dropsTex = canvasTex(512, 384, (g) => {
+    for (let i = 0; i < 260; i++) {
+      const x = Math.random() * 512, y = Math.random() * 384, r = rand(1.5, 5);
+      g.fillStyle = `rgba(200,220,255,${rand(0.15, 0.4)})`;
+      g.beginPath(); g.ellipse(x, y, r, r * 1.3, 0, 0, Math.PI * 2); g.fill();
+      if (Math.random() < 0.15) { g.fillRect(x - 0.7, y, 1.4, rand(10, 40)); }
+    }
+  });
+  const glass = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 1.8), new THREE.MeshBasicMaterial({ map: dropsTex, transparent: true, opacity: 0.9, depthWrite: false, color: 0xaabbee }));
+  glass.position.set(0, 2.3, -4.05);
+  scene.add(glass);
+  // Cortinas de terciopelo
+  const curtMat = new THREE.MeshStandardMaterial({ color: 0x6a0f1a, roughness: 0.85, side: THREE.DoubleSide });
+  for (const s of [-1, 1]) {
+    const g = new THREE.PlaneGeometry(0.8, 2.5, 24, 1);
+    const p = g.attributes.position;
+    for (let i = 0; i < p.count; i++) p.setZ(i, Math.sin(p.getX(i) * 22) * 0.05);
+    g.computeVertexNormals();
+    const c = new THREE.Mesh(g, curtMat);
+    c.position.set(s * 1.65, 2.15, -3.9);
+    scene.add(c);
+  }
+  const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 4, 8), frameMat);
+  rod.rotation.z = Math.PI / 2;
+  rod.position.set(0, 3.42, -3.88);
+  scene.add(rod);
+}
+// Piso de madera
+{
+  const woodTex = canvasTex(512, 512, (g) => {
+    for (let i = 0; i < 8; i++) {
+      const l = 22 + Math.random() * 8;
+      g.fillStyle = `hsl(25, 40%, ${l}%)`;
+      g.fillRect(0, i * 64, 512, 64);
+      g.fillStyle = 'rgba(0,0,0,0.35)';
+      g.fillRect(0, i * 64, 512, 2);
+      g.fillRect(Math.random() * 512, i * 64, 2, 64);
+      g.strokeStyle = 'rgba(0,0,0,0.08)';
+      for (let k = 0; k < 6; k++) { g.beginPath(); g.moveTo(0, i * 64 + rand(5, 60)); g.bezierCurveTo(170, i * 64 + rand(5, 60), 340, i * 64 + rand(5, 60), 512, i * 64 + rand(5, 60)); g.stroke(); }
+    }
+  }, [3, 3]);
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(11.2, 9.2), new THREE.MeshStandardMaterial({ map: woodTex, roughness: 0.7 }));
+  floor.rotation.x = -Math.PI / 2;
+  floor.position.set(0, 0, 0.5);
+  floor.receiveShadow = true;
+  scene.add(floor);
+  // Alfombra redonda roja, negra y amarilla
+  const rugTex = canvasTex(512, 512, (g) => {
+    const cols = ['#c8102e', '#111111', '#ffcf2e', '#111111'];
+    for (let r = 256, i = 0; r > 0; r -= 22, i++) {
+      g.fillStyle = cols[i % 4]; g.beginPath(); g.arc(256, 256, r, 0, Math.PI * 2); g.fill();
+    }
+  });
+  const rug = new THREE.Mesh(new THREE.CircleGeometry(1.8, 64), new THREE.MeshStandardMaterial({ map: rugTex, roughness: 1 }));
+  rug.rotation.x = -Math.PI / 2;
+  rug.position.y = 0.005;
+  rug.receiveShadow = true;
+  scene.add(rug);
+}
+
+// Pósters en la pared
+function addPoster(tex, w, h, x, y, rotZ) {
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshStandardMaterial({ map: tex, roughness: 0.8 }));
+  m.position.set(x, y, -3.99);
+  m.rotation.z = rotZ;
+  scene.add(m);
+}
+function tape(g, x, y, w, h, a) {
+  g.save(); g.translate(x, y); g.rotate(a);
+  g.fillStyle = 'rgba(255,214,0,0.92)'; g.fillRect(-w / 2, -h / 2, w, h);
+  g.restore();
+}
+addPoster(canvasTex(512, 720, (g, w, h) => {
+  g.fillStyle = '#111'; g.fillRect(0, 0, w, h);
+  g.fillStyle = '#c8102e';
+  g.font = '150px "Permanent Marker"'; g.textAlign = 'center';
+  g.fillText('STAY', w / 2, 250);
+  g.fillText('ALIVE', w / 2, 420);
+  g.fillStyle = '#ffd600';
+  g.font = '130px "Permanent Marker"';
+  g.fillText('|-/', w / 2, 600);
+  tape(g, 60, 30, 160, 40, -0.5); tape(g, w - 60, 30, 160, 40, 0.5);
+  tape(g, 60, h - 30, 160, 40, 0.5); tape(g, w - 60, h - 30, 160, 40, -0.5);
+}), 1.2, 1.7, -3.3, 2.3, 0.04);
+addPoster(canvasTex(512, 720, (g, w, h) => {
+  const gr = g.createLinearGradient(0, 0, 0, h);
+  gr.addColorStop(0, '#1b2a5a'); gr.addColorStop(1, '#0b1026');
+  g.fillStyle = gr; g.fillRect(0, 0, w, h);
+  g.fillStyle = '#ffe9a8'; g.beginPath(); g.arc(380, 130, 70, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#1b2a5a'; g.beginPath(); g.arc(410, 110, 64, 0, Math.PI * 2); g.fill();
+  for (let i = 0; i < 40; i++) { g.fillStyle = 'rgba(255,255,255,0.8)'; g.fillRect(Math.random() * w, Math.random() * 360, 2, 2); }
+  // Gato sentado en silueta
+  g.fillStyle = '#05060f';
+  g.beginPath(); g.ellipse(256, 470, 95, 110, 0, 0, Math.PI * 2); g.fill();
+  g.beginPath(); g.arc(256, 330, 62, 0, Math.PI * 2); g.fill();
+  g.beginPath(); g.moveTo(205, 300); g.lineTo(212, 238); g.lineTo(248, 280); g.fill();
+  g.beginPath(); g.moveTo(307, 300); g.lineTo(300, 238); g.lineTo(264, 280); g.fill();
+  g.lineWidth = 22; g.lineCap = 'round'; g.strokeStyle = '#05060f';
+  g.beginPath(); g.moveTo(340, 540); g.bezierCurveTo(440, 540, 430, 420, 380, 400); g.stroke();
+  g.fillStyle = '#ffd600'; g.font = '62px "Permanent Marker"'; g.textAlign = 'center';
+  g.fillText('QUE TE', w / 2, 630); g.fillText('MEJORES', w / 2, 690);
+  tape(g, w / 2, 20, 180, 40, 0.06);
+}), 1.15, 1.6, 3.2, 2.35, -0.05);
+
+// Guirnalda de luces sobre la ventana
+const bulbs = [];
+{
+  const pts = [];
+  for (let i = 0; i <= 40; i++) {
+    const k = i / 40;
+    pts.push(new THREE.Vector3(-5.2 + k * 10.4, 3.85 - Math.sin(k * Math.PI) * 0.45 - Math.sin(k * Math.PI * 4) * 0.08, -3.95));
+  }
+  scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: 0x111111 })));
+  const cols = [0xff2a2a, 0xffd23f, 0xfff4d0];
+  const bulbGeo = new THREE.SphereGeometry(0.045, 12, 8);
+  for (let i = 1; i < 40; i += 1.6) {
+    const p = pts[Math.round(i)];
+    const base = new THREE.Color(cols[bulbs.length % 3]);
+    const mat = new THREE.MeshBasicMaterial({ color: base.clone() });
+    const b = new THREE.Mesh(bulbGeo, mat);
+    b.position.copy(p).add(new THREE.Vector3(0, -0.06, 0.02));
+    scene.add(b);
+    bulbs.push({ mat, base, ph: rand(0, 6) });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// La cama de cojín y el gatito resfriado
+// ---------------------------------------------------------------------------
+const mustard = new THREE.MeshStandardMaterial({ color: 0xd9a21b, roughness: 0.9 });
+{
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 0.9, 0.2, 48), mustard);
+  base.position.y = 0.1;
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(0.8, 0.2, 16, 48), mustard);
+  rim.rotation.x = Math.PI / 2;
+  rim.position.y = 0.22;
+  for (const m of [base, rim]) { m.castShadow = m.receiveShadow = true; scene.add(m); }
+}
+
+const furTex = canvasTex(256, 128, (g, w, h) => {
+  g.fillStyle = '#f0a052'; g.fillRect(0, 0, w, h);
+  g.fillStyle = '#c0682a';
+  for (let i = 0; i < 12; i++) {
+    const x0 = i * (w / 12) + rand(-3, 3), wd = rand(5, 9);
+    g.beginPath();
+    for (let y = 0; y <= h * 0.75; y += 4) g.lineTo(x0 + Math.sin(y * 0.15 + i) * 3, y);
+    for (let y = h * 0.75; y >= 0; y -= 4) g.lineTo(x0 + wd + Math.sin(y * 0.15 + i) * 3, y);
+    g.fill();
+  }
+  const gr = g.createLinearGradient(0, h * 0.55, 0, h);
+  gr.addColorStop(0, 'rgba(255,240,220,0)'); gr.addColorStop(1, 'rgba(255,240,220,1)');
+  g.fillStyle = gr; g.fillRect(0, 0, w, h);
+});
+const furMat = new THREE.MeshStandardMaterial({ map: furTex, roughness: 0.9 });
+const creamMat = new THREE.MeshStandardMaterial({ color: 0xfff0dc, roughness: 0.9 });
+const pinkMat = new THREE.MeshStandardMaterial({ color: 0xff9db0, roughness: 0.7 });
+const eyeMat = new THREE.MeshStandardMaterial({ color: 0x15100c, roughness: 0.15 });
+const noseMat = new THREE.MeshStandardMaterial({ color: 0xff4d6a, emissive: 0xff1a40, emissiveIntensity: 0.5, roughness: 0.4 });
+const beanieMat = new THREE.MeshStandardMaterial({ color: 0xc8102e, roughness: 0.95 });
+const flannelTex = canvasTex(256, 256, (g, w, h) => {
+  g.fillStyle = '#b3122a'; g.fillRect(0, 0, w, h);
+  g.fillStyle = 'rgba(0,0,0,0.55)';
+  for (let i = 0; i < w; i += 64) { g.fillRect(i, 0, 26, h); g.fillRect(0, i, w, 26); }
+  g.fillStyle = 'rgba(255,214,0,0.6)';
+  for (let i = 40; i < w; i += 64) { g.fillRect(i, 0, 3, h); g.fillRect(0, i, w, 3); }
+}, [3, 2]);
+
+const cat = new THREE.Group();
+cat.position.set(0, 0.56, 0.02);
+cat.rotation.y = 0.3;
+scene.add(cat);
+cat.userData.kind = 'gato';
+
+const catBody = new THREE.Group();
+cat.add(catBody);
+const bodyM = new THREE.Mesh(new THREE.SphereGeometry(0.5, 32, 20), furMat);
+bodyM.scale.set(1.0, 0.58, 0.75);
+catBody.add(bodyM);
+// Mantita a cuadros encima
+const blanket = new THREE.Mesh(
+  new THREE.SphereGeometry(0.52, 40, 20, 0, Math.PI * 2, 0, Math.PI * 0.56),
+  new THREE.MeshStandardMaterial({ map: flannelTex, roughness: 0.95, side: THREE.DoubleSide })
+);
+blanket.scale.set(1.0, 0.7, 0.86);
+blanket.position.set(-0.14, 0.0, 0);
+blanket.rotation.z = 0.12;
+catBody.add(blanket);
+// Patitas
+for (const [x, z] of [[0.28, 0.36], [0.5, 0.3]]) {
+  const paw = new THREE.Mesh(new THREE.SphereGeometry(0.075, 16, 10), creamMat);
+  paw.scale.set(1.3, 0.7, 1.0);
+  paw.position.set(x, -0.2, z);
+  catBody.add(paw);
+}
+// Cabeza
+const head = new THREE.Group();
+head.position.set(0.42, 0.28, 0.14);
+head.rotation.y = 0.3;
+cat.add(head);
+const skull = new THREE.Mesh(new THREE.SphereGeometry(0.24, 32, 20), furMat);
+skull.scale.set(1.08, 0.92, 0.95);
+head.add(skull);
+for (const s of [-1, 1]) {
+  const cheek = new THREE.Mesh(new THREE.SphereGeometry(0.11, 16, 12), furMat);
+  cheek.position.set(0.12 * s, -0.07, 0.1);
+  head.add(cheek);
+}
+const muzzle = new THREE.Mesh(new THREE.SphereGeometry(0.085, 16, 12), creamMat);
+muzzle.scale.set(1.35, 0.8, 0.8);
+muzzle.position.set(0, -0.06, 0.2);
+head.add(muzzle);
+const nose = new THREE.Mesh(new THREE.SphereGeometry(0.032, 12, 8), noseMat);
+nose.scale.set(1.3, 0.8, 0.9);
+nose.position.set(0, -0.015, 0.262);
+head.add(nose);
+const eyes = [];
+for (const s of [-1, 1]) {
+  const e = new THREE.Mesh(new THREE.SphereGeometry(0.04, 16, 10), eyeMat);
+  e.scale.set(1.0, 0.55, 0.5);
+  e.position.set(0.095 * s, 0.04, 0.205);
+  e.rotation.z = -0.25 * s;
+  head.add(e);
+  const shine = new THREE.Mesh(new THREE.SphereGeometry(0.009, 8, 6), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+  shine.position.set(0.012, 0.008, 0.032);
+  e.add(shine);
+  eyes.push(e);
+  // Mejillas sonrojadas por la fiebre
+  const blush = new THREE.Mesh(new THREE.CircleGeometry(0.035, 16), new THREE.MeshBasicMaterial({ color: 0xff6f8a, transparent: true, opacity: 0.55 }));
+  blush.position.set(0.16 * s, -0.04, 0.19);
+  blush.lookAt(blush.position.clone().multiplyScalar(3));
+  head.add(blush);
+}
+// Orejas que asoman por el gorro
+for (const s of [-1, 1]) {
+  const ear = new THREE.Group();
+  ear.position.set(0.15 * s, 0.22, -0.02);
+  ear.rotation.z = -0.38 * s;
+  const outer = new THREE.Mesh(new THREE.ConeGeometry(0.085, 0.2, 16), furMat);
+  outer.position.y = 0.06;
+  const inner = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.13, 12), pinkMat);
+  inner.position.set(0, 0.05, 0.035);
+  ear.add(outer, inner);
+  head.add(ear);
+}
+// Bigotes
+{
+  const pts = [];
+  for (const s of [-1, 1]) for (let k = -1; k <= 1; k++) {
+    pts.push(new THREE.Vector3(0.07 * s, -0.06 + k * 0.012, 0.25), new THREE.Vector3(0.3 * s, -0.04 + k * 0.045, 0.2));
+  }
+  head.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: 0xffffff })));
+}
+// Gorro rojo con pompón
+const beanie = new THREE.Group();
+beanie.position.set(0, 0.03, -0.01);
+beanie.rotation.z = 0.1;
+head.add(beanie);
+{
+  const dome = new THREE.Mesh(new THREE.SphereGeometry(0.255, 32, 16, 0, Math.PI * 2, 0, Math.PI * 0.5), beanieMat);
+  dome.scale.set(1.04, 1.1, 1.02);
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(0.255, 0.04, 12, 40), beanieMat);
+  rim.rotation.x = Math.PI / 2;
+  rim.position.y = 0.02;
+  beanie.add(dome, rim);
+}
+const pompom = new THREE.Mesh(new THREE.SphereGeometry(0.07, 16, 12), new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 1 }));
+pompom.position.y = 0.3;
+beanie.add(pompom);
+// Termómetro en la boca
+{
+  const th = new THREE.Group();
+  th.position.set(0.05, -0.1, 0.24);
+  th.rotation.set(0.5, 0.5, -0.9);
+  const tube = new THREE.Mesh(new THREE.CylinderGeometry(0.009, 0.009, 0.2, 8), new THREE.MeshStandardMaterial({ color: 0xeaf6ff, roughness: 0.1, transparent: true, opacity: 0.85 }));
+  tube.position.y = 0.1;
+  const tip = new THREE.Mesh(new THREE.SphereGeometry(0.013, 8, 6), new THREE.MeshStandardMaterial({ color: 0xff2030, emissive: 0xff0010, emissiveIntensity: 0.6 }));
+  const line = new THREE.Mesh(new THREE.CylinderGeometry(0.004, 0.004, 0.12, 6), tip.material);
+  line.position.y = 0.06;
+  th.add(tube, tip, line);
+  head.add(th);
+}
+// Cola que se mueve (se reconstruye cada cuadro)
+let tailMesh = null;
+const tailPts = [0, 1, 2, 3, 4].map(() => new THREE.Vector3());
+function updateTail(t) {
+  const w = Math.sin(t * 1.3) * 0.08, tip = Math.sin(t * 2.1) * 0.06;
+  tailPts[0].set(-0.42, -0.02, -0.05);
+  tailPts[1].set(-0.56, -0.1, 0.18);
+  tailPts[2].set(-0.42, -0.16, 0.42);
+  tailPts[3].set(-0.1, -0.18, 0.52 + w * 0.3);
+  tailPts[4].set(0.16 + w, -0.15 + tip * 0.5, 0.5 + tip);
+  const geo = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(tailPts), 40, 0.055, 10);
+  if (tailMesh) { tailMesh.geometry.dispose(); tailMesh.geometry = geo; }
+  else { tailMesh = new THREE.Mesh(geo, furMat); tailMesh.castShadow = true; catBody.add(tailMesh); }
+}
+updateTail(0);
+cat.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+
+// ---------------------------------------------------------------------------
+// Taza de té humeante
+// ---------------------------------------------------------------------------
+const mug = new THREE.Group();
+mug.position.set(1.3, 0, 0.1);
+mug.rotation.y = -0.8;
+mug.userData.kind = 'te';
+scene.add(mug);
+{
+  const mugTex = canvasTex(512, 160, (g, w, h) => {
+    g.fillStyle = '#ffd23f'; g.fillRect(0, 0, w, h);
+    g.fillStyle = '#111'; g.font = '90px "Permanent Marker"'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText('|-/', w * 0.25, h / 2);
+    g.font = '64px "Permanent Marker"';
+    g.fillText('tecito', w * 0.72, h / 2);
+  });
+  const outer = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.12, 0.28, 40, 1, true), new THREE.MeshStandardMaterial({ map: mugTex, roughness: 0.3, side: THREE.DoubleSide }));
+  outer.position.y = 0.14;
+  const bottom = new THREE.Mesh(new THREE.CircleGeometry(0.12, 32), new THREE.MeshStandardMaterial({ color: 0xffd23f }));
+  bottom.rotation.x = -Math.PI / 2; bottom.position.y = 0.005;
+  const tea = new THREE.Mesh(new THREE.CircleGeometry(0.135, 32), new THREE.MeshStandardMaterial({ color: 0x7a3e10, roughness: 0.1, emissive: 0x2a1000 }));
+  tea.rotation.x = -Math.PI / 2; tea.position.y = 0.24;
+  const handle = new THREE.Mesh(new THREE.TorusGeometry(0.07, 0.022, 10, 20, Math.PI), new THREE.MeshStandardMaterial({ color: 0xffd23f, roughness: 0.3 }));
+  handle.rotation.z = -Math.PI / 2;
+  handle.position.set(0.14, 0.14, 0);
+  const tag = new THREE.Mesh(new THREE.PlaneGeometry(0.05, 0.06), new THREE.MeshStandardMaterial({ color: 0xc8102e, side: THREE.DoubleSide }));
+  tag.position.set(-0.15, 0.2, 0.03);
+  const string = new THREE.Mesh(new THREE.CylinderGeometry(0.002, 0.002, 0.1, 4), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+  string.position.set(-0.13, 0.26, 0.02); string.rotation.z = 0.5;
+  mug.add(outer, bottom, tea, handle, tag, string);
+  mug.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+}
+const steam = [];
+for (let i = 0; i < 26; i++) {
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: smokeTex, color: 0xa8a8b8, transparent: true, depthWrite: false, opacity: 0 }));
+  scene.add(s);
+  steam.push({ s, ph: i / 26, sp: 1 });
+}
+let steamBoost = 0;
+function updateSteam(t, dt) {
+  steamBoost = Math.max(0, steamBoost - dt * 0.4);
+  for (const st of steam) {
+    const k = ((t * (0.33 + steamBoost * 0.4) + st.ph) % 1);
+    st.s.position.set(
+      mug.position.x + Math.sin(k * 6 + st.ph * 10) * 0.06 * (1 + k),
+      0.28 + k * (0.9 + steamBoost),
+      mug.position.z + Math.cos(k * 5 + st.ph * 7) * 0.05 * (1 + k));
+    const sc = 0.08 + k * 0.3;
+    st.s.scale.set(sc, sc, 1);
+    st.s.material.opacity = Math.sin(k * Math.PI) * (0.3 + steamBoost * 0.3);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Caja de pañuelos y pañuelos arrugados
+// ---------------------------------------------------------------------------
+const tissues = new THREE.Group();
+tissues.position.set(-1.3, 0, 0.6);
+tissues.rotation.y = 0.5;
+tissues.userData.kind = 'panuelos';
+scene.add(tissues);
+{
+  const boxTex = canvasTex(256, 160, (g, w, h) => {
+    g.fillStyle = '#7fc8f8'; g.fillRect(0, 0, w, h);
+    g.fillStyle = 'rgba(255,255,255,0.85)';
+    for (let i = 0; i < 18; i++) {
+      const x = Math.random() * w, y = Math.random() * h;
+      g.beginPath(); g.arc(x, y, 8, 0, Math.PI * 2); g.fill();
+      g.beginPath(); g.arc(x - 8, y - 9, 4, 0, Math.PI * 2); g.arc(x + 8, y - 9, 4, 0, Math.PI * 2); g.arc(x - 11, y - 1, 3.5, 0, Math.PI * 2); g.arc(x + 11, y - 1, 3.5, 0, Math.PI * 2); g.fill();
+    }
+  });
+  const b = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.26, 0.3), new THREE.MeshStandardMaterial({ map: boxTex, roughness: 0.8 }));
+  b.position.y = 0.13;
+  tissues.add(b);
+  const tg = new THREE.PlaneGeometry(0.2, 0.22, 10, 10);
+  const p = tg.attributes.position;
+  for (let i = 0; i < p.count; i++) p.setZ(i, Math.sin(p.getX(i) * 30) * 0.02 + Math.sin(p.getY(i) * 20) * 0.015);
+  tg.computeVertexNormals();
+  const tissue = new THREE.Mesh(tg, new THREE.MeshStandardMaterial({ color: 0xffffff, side: THREE.DoubleSide, roughness: 1 }));
+  tissue.position.y = 0.34;
+  tissue.rotation.y = 0.3;
+  tissues.add(tissue);
+  tissues.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+}
+function crumpled() {
+  const g = new THREE.IcosahedronGeometry(0.06, 2);
+  const p = g.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const v = new THREE.Vector3().fromBufferAttribute(p, i);
+    v.multiplyScalar(1 + (Math.sin(v.x * 80) * Math.cos(v.y * 70) * Math.sin(v.z * 60)) * 0.25);
+    p.setXYZ(i, v.x, v.y, v.z);
+  }
+  g.computeVertexNormals();
+  return g;
+}
+{
+  const cm = new THREE.MeshStandardMaterial({ color: 0xf7f7ff, roughness: 1, flatShading: true });
+  [[-0.9, 0.95], [-1.6, 1.05], [-1.05, 1.25], [-1.75, 0.35], [0.9, 1.3]].forEach(([x, z]) => {
+    const m = new THREE.Mesh(crumpled(), cm);
+    m.position.set(x, 0.05, z);
+    m.rotation.set(rand(0, 6), rand(0, 6), rand(0, 6));
+    m.castShadow = true;
+    scene.add(m);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Tocadiscos sobre una caja de madera
+// ---------------------------------------------------------------------------
+const crateMat = new THREE.MeshStandardMaterial({ color: 0x8a5a2b, roughness: 0.85 });
+const blackMat = new THREE.MeshStandardMaterial({ color: 0x141414, roughness: 0.5 });
+const record = new THREE.Group();
+record.position.set(-2.9, 0, -2.4);
+record.rotation.y = 0.45;
+record.userData.kind = 'tocadiscos';
+scene.add(record);
+let platter;
+{
+  const crate = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.6, 0.65), crateMat);
+  crate.position.y = 0.3;
+  const base = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.1, 0.6), blackMat);
+  base.position.y = 0.65;
+  const vinylTex = canvasTex(512, 512, (g) => {
+    g.fillStyle = '#0c0c0c'; g.beginPath(); g.arc(256, 256, 256, 0, Math.PI * 2); g.fill();
+    for (let r = 250; r > 90; r -= 4) { g.strokeStyle = `rgba(255,255,255,${r % 12 === 0 ? 0.08 : 0.03})`; g.beginPath(); g.arc(256, 256, r, 0, Math.PI * 2); g.stroke(); }
+    g.fillStyle = '#c8102e'; g.beginPath(); g.arc(256, 256, 85, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#ffd600'; g.font = '64px "Permanent Marker"'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText('|-/', 256, 250);
+    g.fillStyle = '#111'; g.beginPath(); g.arc(256, 256, 7, 0, Math.PI * 2); g.fill();
+  });
+  platter = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.25, 0.02, 48), [blackMat, new THREE.MeshStandardMaterial({ map: vinylTex, roughness: 0.3, metalness: 0.2 }), blackMat]);
+  platter.position.set(-0.06, 0.71, 0);
+  const pivot = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.04, 0.05, 12), new THREE.MeshStandardMaterial({ color: 0xaaaaaa, metalness: 0.9, roughness: 0.3 }));
+  pivot.position.set(0.3, 0.72, -0.2);
+  const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.36, 8), pivot.material);
+  arm.position.set(0.22, 0.75, -0.04);
+  arm.rotation.set(Math.PI / 2, 0, 0.45);
+  record.add(crate, base, platter, pivot, arm);
+  // Discos apoyados en la caja
+  const sleeves = [
+    (g, w, h) => { g.fillStyle = '#ffd600'; g.fillRect(0, 0, w, h); g.fillStyle = '#111'; g.font = '110px "Permanent Marker"'; g.textAlign = 'center'; g.fillText('|-/', w / 2, h / 2 + 38); },
+    (g, w, h) => { g.fillStyle = '#c8102e'; g.fillRect(0, 0, w, h); g.fillStyle = '#111'; for (let i = 0; i < 6; i++) g.fillRect(0, i * 46 + 10, w, 18); },
+    (g, w, h) => { g.fillStyle = '#1a1a1a'; g.fillRect(0, 0, w, h); g.strokeStyle = '#ffd600'; g.lineWidth = 10; g.beginPath(); g.arc(w / 2, h / 2, 80, 0, Math.PI * 2); g.stroke(); }
+  ];
+  sleeves.forEach((draw, i) => {
+    const s = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 0.01), new THREE.MeshStandardMaterial({ map: canvasTex(256, 256, draw), roughness: 0.7 }));
+    s.position.set(-0.15 + i * 0.12, 0.25, 0.36 + i * 0.015);
+    s.rotation.x = -0.12;
+    record.add(s);
+  });
+  record.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+}
+
+// ---------------------------------------------------------------------------
+// Amplificador con ecualizador y guitarra eléctrica
+// ---------------------------------------------------------------------------
+const amp = new THREE.Group();
+amp.position.set(2.9, 0, -2.8);
+amp.rotation.y = -0.4;
+amp.userData.kind = 'amp';
+scene.add(amp);
+let cone;
+const eqBars = [];
+{
+  const body = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.85, 0.45), new THREE.MeshStandardMaterial({ color: 0x161616, roughness: 0.9 }));
+  body.position.y = 0.425;
+  const grilleTex = canvasTex(256, 200, (g, w, h) => {
+    g.fillStyle = '#2a2a2a'; g.fillRect(0, 0, w, h);
+    g.strokeStyle = 'rgba(0,0,0,0.6)';
+    for (let i = 0; i < w; i += 5) { g.beginPath(); g.moveTo(i, 0); g.lineTo(i, h); g.stroke(); }
+    for (let i = 0; i < h; i += 5) { g.beginPath(); g.moveTo(0, i); g.lineTo(w, i); g.stroke(); }
+  });
+  const grille = new THREE.Mesh(new THREE.PlaneGeometry(0.86, 0.6), new THREE.MeshStandardMaterial({ map: grilleTex, roughness: 1 }));
+  grille.position.set(0, 0.36, 0.227);
+  cone = new THREE.Mesh(new THREE.CircleGeometry(0.22, 40), new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.4, transparent: true, opacity: 0.6 }));
+  cone.position.set(0, 0.36, 0.229);
+  const panel = new THREE.Mesh(new THREE.BoxGeometry(0.96, 0.14, 0.02), new THREE.MeshStandardMaterial({ color: 0xd9c28a, metalness: 0.6, roughness: 0.35 }));
+  panel.position.set(0, 0.76, 0.228);
+  amp.add(body, grille, cone, panel);
+  for (let i = 0; i < 6; i++) {
+    const k = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.03, 12), blackMat);
+    k.rotation.x = Math.PI / 2;
+    k.position.set(-0.35 + i * 0.12, 0.76, 0.25);
+    amp.add(k);
+  }
+  // Cinta amarilla pegada en diagonal
+  const tapeM = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.07), new THREE.MeshStandardMaterial({ color: 0xffd600, roughness: 0.6 }));
+  tapeM.position.set(0.3, 0.12, 0.231);
+  tapeM.rotation.z = 0.35;
+  amp.add(tapeM);
+  const barGeo = new THREE.BoxGeometry(0.07, 1, 0.07);
+  barGeo.translate(0, 0.5, 0);
+  for (let i = 0; i < 9; i++) {
+    const c = new THREE.Color().setHSL(0.0 + i * 0.016, 1, 0.5).multiplyScalar(1.6);
+    const b = new THREE.Mesh(barGeo, new THREE.MeshBasicMaterial({ color: c }));
+    b.position.set(-0.4 + i * 0.1, 0.86, 0);
+    b.scale.y = 0.03;
+    amp.add(b);
+    eqBars.push(b);
+  }
+  amp.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+}
+const guitar = new THREE.Group();
+guitar.position.set(4.25, 0.44, -3.62);
+guitar.rotation.set(-0.18, -0.25, 0.16);
+guitar.userData.kind = 'amp';
+scene.add(guitar);
+{
+  const gs = new THREE.Shape();
+  gs.moveTo(0, -0.42);
+  gs.bezierCurveTo(0.32, -0.42, 0.36, -0.1, 0.22, 0.02);
+  gs.bezierCurveTo(0.3, 0.12, 0.3, 0.3, 0.16, 0.34);
+  gs.bezierCurveTo(0.1, 0.36, 0.08, 0.2, 0.04, 0.18);
+  gs.lineTo(-0.04, 0.18);
+  gs.bezierCurveTo(-0.1, 0.26, -0.2, 0.38, -0.24, 0.26);
+  gs.bezierCurveTo(-0.3, 0.12, -0.3, 0.04, -0.22, 0.0);
+  gs.bezierCurveTo(-0.36, -0.12, -0.32, -0.42, 0, -0.42);
+  const bodyG = new THREE.ExtrudeGeometry(gs, { depth: 0.06, bevelEnabled: true, bevelThickness: 0.012, bevelSize: 0.012, bevelSegments: 3, curveSegments: 24 });
+  const gBody = new THREE.Mesh(bodyG, new THREE.MeshStandardMaterial({ color: 0xc8102e, roughness: 0.25, metalness: 0.1 }));
+  const neck = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.78, 0.03), new THREE.MeshStandardMaterial({ color: 0x3b2412, roughness: 0.6 }));
+  neck.position.set(0, 0.56, 0.06);
+  const headstock = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.18, 0.025), blackMat);
+  headstock.position.set(0, 1.03, 0.055);
+  const guard = new THREE.Mesh(new THREE.CircleGeometry(0.15, 24), blackMat);
+  guard.position.set(0.06, -0.12, 0.075);
+  const pick1 = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.04, 0.02), new THREE.MeshStandardMaterial({ color: 0xdddddd, metalness: 0.8, roughness: 0.3 }));
+  pick1.position.set(0, 0.0, 0.08);
+  const pick2 = pick1.clone(); pick2.position.y = -0.18;
+  const strings = [];
+  for (let i = 0; i < 6; i++) {
+    const x = -0.02 + i * 0.008;
+    strings.push(new THREE.Vector3(x, -0.25, 0.085), new THREE.Vector3(x * 0.8, 0.95, 0.08));
+  }
+  const strLines = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(strings), new THREE.LineBasicMaterial({ color: 0xdddddd }));
+  guitar.add(gBody, neck, headstock, guard, pick1, pick2, strLines);
+  guitar.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+}
+
+// ---------------------------------------------------------------------------
+// Efectos flotantes (corazones, notas, textos)
+// ---------------------------------------------------------------------------
+const fx = [];
+function spawnSprite(sprite, pos, vel, life) {
+  sprite.position.copy(pos);
+  scene.add(sprite);
+  fx.push({ s: sprite, vel, life, max: life, base: sprite.scale.clone() });
+}
+function spawnText(text, pos, opts = {}, life = 2.2) {
+  spawnSprite(textSprite(text, opts), pos.clone(), new THREE.Vector3(rand(-0.05, 0.05), 0.35, 0), life);
+}
+function spawnHearts(pos, n = 6) {
+  const icons = ['💛', '❤️', '🧡', '💖'];
+  for (let i = 0; i < n; i++) {
+    const s = textSprite(icons[i % icons.length], { size: 64, stroke: 'rgba(0,0,0,0)', height: rand(0.14, 0.22) });
+    spawnSprite(s, pos.clone().add(new THREE.Vector3(rand(-0.2, 0.2), rand(0, 0.15), rand(-0.1, 0.1))), new THREE.Vector3(rand(-0.25, 0.25), rand(0.35, 0.6), rand(-0.1, 0.1)), rand(1.6, 2.6));
+  }
+}
+function spawnNote(pos) {
+  const notes = ['♪', '♫', '♬', '🤘'];
+  const s = textSprite(notes[Math.floor(Math.random() * notes.length)], { size: 72, color: Math.random() < 0.5 ? '#ffd600' : '#ff3b4f', height: rand(0.16, 0.26) });
+  spawnSprite(s, pos.clone().add(new THREE.Vector3(rand(-0.3, 0.3), 0, rand(-0.1, 0.1))), new THREE.Vector3(rand(-0.15, 0.15), rand(0.4, 0.7), 0), rand(1.8, 2.6));
+}
+function updateFx(dt, t) {
+  for (let i = fx.length - 1; i >= 0; i--) {
+    const f = fx[i];
+    f.life -= dt;
+    f.s.position.addScaledVector(f.vel, dt);
+    f.s.position.x += Math.sin(t * 3 + i) * 0.002;
+    const k = f.life / f.max;
+    f.s.material.opacity = Math.min(1, k * 2.5);
+    const sc = 0.8 + (1 - k) * 0.3;
+    f.s.scale.set(f.base.x * sc, f.base.y * sc, 1);
+    if (f.life <= 0) {
+      scene.remove(f.s);
+      f.s.material.map.dispose();
+      f.s.material.dispose();
+      fx.splice(i, 1);
+    }
+  }
+}
+// Gotitas del estornudo
+const sneezeDrops = [];
+{
+  const g = new THREE.SphereGeometry(0.012, 6, 4);
+  const m = new THREE.MeshBasicMaterial({ color: 0xcfe8ff, transparent: true, opacity: 0.8 });
+  for (let i = 0; i < 18; i++) {
+    const d = new THREE.Mesh(g, m);
+    d.visible = false;
+    scene.add(d);
+    sneezeDrops.push({ m: d, v: new THREE.Vector3(), life: 0 });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Audio sintetizado (sin archivos): lluvia, maullidos, ronroneo y un ritmo rockero
+// ---------------------------------------------------------------------------
+let actx = null, master = null, noiseBuf = null;
+function ensureAudio() {
+  if (!actx) {
+    actx = new (window.AudioContext || window.webkitAudioContext)();
+    master = actx.createGain();
+    master.gain.value = 0.55;
+    master.connect(actx.destination);
+    noiseBuf = actx.createBuffer(1, actx.sampleRate * 2, actx.sampleRate);
+    const d = noiseBuf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    // Lluvia de fondo, suavecita
+    const src = actx.createBufferSource(); src.buffer = noiseBuf; src.loop = true;
+    const lp = actx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 900;
+    const g = actx.createGain(); g.gain.value = 0.05;
+    src.connect(lp).connect(g).connect(master);
+    src.start();
+  }
+  if (actx.state === 'suspended') actx.resume();
+}
+function noise(t, dur) {
+  const s = actx.createBufferSource();
+  s.buffer = noiseBuf;
+  s.start(t, Math.random(), dur + 0.05);
+  return s;
+}
+function env(g, t, peak, attack, decay) {
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(peak, t + attack);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + attack + decay);
+}
+const mtof = (m) => 440 * Math.pow(2, (m - 69) / 12);
+
+function kick(t) {
+  const o = actx.createOscillator(), g = actx.createGain();
+  o.frequency.setValueAtTime(150, t);
+  o.frequency.exponentialRampToValueAtTime(40, t + 0.12);
+  env(g, t, 0.9, 0.003, 0.32);
+  o.connect(g).connect(master); o.start(t); o.stop(t + 0.4);
+}
+function snare(t) {
+  const n = noise(t, 0.2), hp = actx.createBiquadFilter(), g = actx.createGain();
+  hp.type = 'highpass'; hp.frequency.value = 1200;
+  env(g, t, 0.45, 0.002, 0.18);
+  n.connect(hp).connect(g).connect(master);
+  const o = actx.createOscillator(), g2 = actx.createGain();
+  o.type = 'triangle'; o.frequency.value = 190;
+  env(g2, t, 0.3, 0.002, 0.1);
+  o.connect(g2).connect(master); o.start(t); o.stop(t + 0.15);
+}
+function hat(t, v) {
+  const n = noise(t, 0.06), hp = actx.createBiquadFilter(), g = actx.createGain();
+  hp.type = 'highpass'; hp.frequency.value = 7000;
+  env(g, t, 0.12 * v, 0.001, 0.05);
+  n.connect(hp).connect(g).connect(master);
+}
+function bass(f, t) {
+  const o = actx.createOscillator(), lp = actx.createBiquadFilter(), g = actx.createGain();
+  o.type = 'sawtooth'; o.frequency.value = f;
+  lp.type = 'lowpass'; lp.frequency.value = 480;
+  env(g, t, 0.28, 0.01, 0.22);
+  o.connect(lp).connect(g).connect(master); o.start(t); o.stop(t + 0.3);
+}
+function uke(f, t) {
+  for (const [type, mul, det] of [['triangle', 1, 0], ['sine', 0.5, 4]]) {
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.type = type; o.frequency.value = f; o.detune.value = det;
+    env(g, t, 0.16 * mul, 0.004, 0.38);
+    o.connect(g).connect(master); o.start(t); o.stop(t + 0.45);
+  }
+}
+function powerChord() {
+  ensureAudio();
+  const t = actx.currentTime;
+  const shaper = actx.createWaveShaper();
+  const curve = new Float32Array(1024);
+  for (let i = 0; i < 1024; i++) { const x = i / 512 - 1; curve[i] = Math.tanh(x * 6); }
+  shaper.curve = curve;
+  const lp = actx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2600;
+  const g = actx.createGain();
+  env(g, t, 0.35, 0.005, 1.4);
+  shaper.connect(lp).connect(g).connect(master);
+  for (const f of [82.41, 123.47, 164.81]) {
+    const o = actx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = f;
+    const og = actx.createGain(); og.gain.value = 0.5;
+    o.connect(og).connect(shaper); o.start(t); o.stop(t + 1.5);
+  }
+}
+function meow() {
+  ensureAudio();
+  const t = actx.currentTime;
+  const o = actx.createOscillator(), f = actx.createBiquadFilter(), g = actx.createGain();
+  o.type = 'sawtooth';
+  o.frequency.setValueAtTime(430, t);
+  o.frequency.linearRampToValueAtTime(800, t + 0.18);
+  o.frequency.linearRampToValueAtTime(520, t + 0.55);
+  f.type = 'bandpass'; f.Q.value = 3;
+  f.frequency.setValueAtTime(900, t);
+  f.frequency.linearRampToValueAtTime(1900, t + 0.2);
+  f.frequency.linearRampToValueAtTime(1000, t + 0.55);
+  env(g, t, 0.4, 0.06, 0.55);
+  o.connect(f).connect(g).connect(master); o.start(t); o.stop(t + 0.7);
+}
+function purr() {
+  ensureAudio();
+  const t = actx.currentTime;
+  const n = noise(t, 1.8), lp = actx.createBiquadFilter(), g = actx.createGain(), out = actx.createGain();
+  lp.type = 'lowpass'; lp.frequency.value = 260;
+  g.gain.value = 0.25;
+  const lfo = actx.createOscillator(), lg = actx.createGain();
+  lfo.frequency.value = 24; lg.gain.value = 0.25;
+  lfo.connect(lg).connect(g.gain);
+  out.gain.setValueAtTime(0.0001, t);
+  out.gain.exponentialRampToValueAtTime(0.9, t + 0.2);
+  out.gain.exponentialRampToValueAtTime(0.0001, t + 1.8);
+  n.connect(lp).connect(g).connect(out).connect(master);
+  lfo.start(t); lfo.stop(t + 1.9);
+}
+function achooSound() {
+  if (!actx) return;
+  const t = actx.currentTime;
+  const n = noise(t, 0.5), bp = actx.createBiquadFilter(), g = actx.createGain();
+  bp.type = 'bandpass'; bp.Q.value = 1.2;
+  bp.frequency.setValueAtTime(3200, t);
+  bp.frequency.exponentialRampToValueAtTime(700, t + 0.35);
+  env(g, t, 0.6, 0.01, 0.4);
+  n.connect(bp).connect(g).connect(master);
+}
+function thunder() {
+  if (!actx) return;
+  const t = actx.currentTime + 0.4;
+  const n = noise(t, 2.6), lp = actx.createBiquadFilter(), g = actx.createGain();
+  lp.type = 'lowpass'; lp.frequency.value = 180;
+  env(g, t, 0.5, 0.15, 2.3);
+  n.connect(lp).connect(g).connect(master);
+}
+
+// Ritmo original: Am – F – C – G, con batería, bajo y ukelele
+const BPM = 96, SPB = 60 / BPM, STEP = SPB / 4;
+const CHORDS = [[57, 60, 64], [53, 57, 60], [48, 52, 55], [55, 59, 62]];
+let musicOn = false, nextNote = 0, step = 0, musicT0 = 0;
+function playStep(s, t) {
+  const bar = Math.floor(s / 16), st = s % 16, ch = CHORDS[bar];
+  if ([0, 7, 8, 10].includes(st)) kick(t);
+  if (st === 4 || st === 12) snare(t);
+  if (st % 2 === 0) hat(t, st % 4 === 2 ? 1 : 0.6);
+  if ([0, 3, 6, 8, 11, 14].includes(st)) bass(mtof(ch[0] - 24), t);
+  if (st % 2 === 0) uke(mtof(ch[(st / 2) % 3] + (st % 8 === 6 ? 12 : 0)), t);
+}
+setInterval(() => {
+  if (!musicOn || !actx) return;
+  while (nextNote < actx.currentTime + 0.12) {
+    playStep(step, nextNote);
+    nextNote += STEP;
+    step = (step + 1) % 64;
+  }
+}, 25);
+const btnMusica = document.getElementById('btnMusica');
+function toggleMusic() {
+  ensureAudio();
+  musicOn = !musicOn;
+  if (musicOn) { nextNote = actx.currentTime + 0.08; musicT0 = nextNote; step = 0; }
+  btnMusica.textContent = musicOn ? '⏸ Pausar música' : '🎸 Poner música';
+}
+function beatPhase() {
+  if (!musicOn || !actx) return -1;
+  return ((actx.currentTime - musicT0) / SPB) % 1;
+}
+
+// ---------------------------------------------------------------------------
+// Comportamiento del gatito
+// ---------------------------------------------------------------------------
+const catState = { blinkAt: 2, blinkT: -1, purrT: -1, sneezeAt: 7, sneezeT: -1, saludAt: -1 };
+const _wp = new THREE.Vector3();
+function triggerSneeze() { if (catState.sneezeT < 0) catState.sneezeT = 0; }
+function petCat() {
+  catState.purrT = 0;
+  meow();
+  setTimeout(purr, 450);
+  head.getWorldPosition(_wp);
+  spawnHearts(_wp.clone().add(new THREE.Vector3(0, 0.3, 0)), 7);
+  spawnText(Math.random() < 0.5 ? 'prrr 💛' : 'miau~', _wp.clone().add(new THREE.Vector3(0.1, 0.45, 0)), { color: '#ffe14d', height: 0.2 });
+}
+function updateCat(t, dt) {
+  // Respiración
+  const br = 1 + Math.sin(t * 1.7) * 0.025;
+  catBody.scale.set(1, br, 1 + (br - 1) * 0.5);
+  updateTail(t);
+
+  // Parpadeo y ojitos cerrados al ronronear
+  let eyeY = 0.55;
+  if (t > catState.blinkAt) { catState.blinkT = 0; catState.blinkAt = t + rand(2.5, 5); }
+  if (catState.blinkT >= 0) { catState.blinkT += dt; if (catState.blinkT < 0.14) eyeY = 0.08; else catState.blinkT = -1; }
+  if (catState.purrT >= 0) {
+    catState.purrT += dt;
+    eyeY = 0.08;
+    if (catState.purrT > 2.2) catState.purrT = -1;
+  }
+
+  // Cabeza: balanceo suave, headbang con la música
+  let rx = Math.sin(t * 0.8) * 0.04, rz = Math.sin(t * 0.6) * 0.05;
+  const bp = beatPhase();
+  if (bp >= 0) {
+    rx += Math.pow(Math.abs(Math.sin(bp * Math.PI)), 2) * 0.22 - 0.08;
+    pompom.position.y = 0.3 + Math.abs(Math.sin(bp * Math.PI)) * 0.04;
+  } else pompom.position.y = 0.3;
+  if (catState.purrT >= 0) rz += Math.sin(catState.purrT * 6) * 0.12;
+
+  // Estornudo: ¡a… a… ACHÚ!
+  if (t > catState.sneezeAt && catState.sneezeT < 0) { triggerSneeze(); }
+  if (catState.sneezeT >= 0) {
+    const s = catState.sneezeT;
+    if (s === 0) { head.getWorldPosition(_wp); spawnText('a… a…', _wp.clone().add(new THREE.Vector3(0.1, 0.45, 0)), { color: '#ffffff', height: 0.16 }, 1.0); }
+    catState.sneezeT += dt;
+    const s2 = catState.sneezeT;
+    if (s2 < 0.7) { rx -= smooth(s2 / 0.7) * 0.35; eyeY = 0.55 - smooth(s2 / 0.7) * 0.45; }
+    else if (s2 < 0.85) { rx += 0.3; eyeY = 0.06; }
+    else if (s2 < 1.5) { rx += 0.3 * (1 - smooth((s2 - 0.85) / 0.65)); }
+    if (s < 0.7 && s2 >= 0.7) {
+      achooSound();
+      head.getWorldPosition(_wp);
+      spawnText('¡ACHÚ!', _wp.clone().add(new THREE.Vector3(0.25, 0.25, 0.35)), { color: '#7fd4ff', height: 0.3 }, 1.6);
+      nose.getWorldPosition(_wp);
+      const fwd = new THREE.Vector3(0, -0.2, 1).applyQuaternion(head.getWorldQuaternion(new THREE.Quaternion()));
+      for (const d of sneezeDrops) {
+        d.m.position.copy(_wp);
+        d.v.copy(fwd).add(new THREE.Vector3(rand(-0.4, 0.4), rand(-0.1, 0.4), rand(-0.4, 0.4))).multiplyScalar(rand(1.2, 2.2));
+        d.life = 1;
+        d.m.visible = true;
+      }
+      catState.saludAt = t + 1.4;
+    }
+    if (s2 > 1.6) { catState.sneezeT = -1; catState.sneezeAt = t + rand(11, 17); }
+  }
+  if (catState.saludAt > 0 && t > catState.saludAt) {
+    catState.saludAt = -1;
+    head.getWorldPosition(_wp);
+    spawnText('¡Salud! 🤧', _wp.clone().add(new THREE.Vector3(-0.2, 0.5, 0)), { color: '#ffe14d', height: 0.2 }, 2.2);
+  }
+  for (const d of sneezeDrops) {
+    if (d.life <= 0) continue;
+    d.life -= dt * 1.2;
+    d.v.y -= 3 * dt;
+    d.m.position.addScaledVector(d.v, dt);
+    if (d.life <= 0 || d.m.position.y < 0.02) { d.m.visible = false; d.life = 0; }
+  }
+
+  head.rotation.x = rx;
+  head.rotation.z = rz;
+  for (const e of eyes) e.scale.y += (eyeY - e.scale.y) * Math.min(1, dt * 18);
+  // Naricita roja que palpita
+  noseMat.emissiveIntensity = 0.4 + Math.sin(t * 2) * 0.2 + (catState.sneezeT >= 0 ? 0.8 : 0);
+}
+
+// ---------------------------------------------------------------------------
+// Relámpagos lejanos
+// ---------------------------------------------------------------------------
+let lightningAt = rand(10, 18), lightningT = -1;
+function updateLightning(t, dt) {
+  if (t > lightningAt && lightningT < 0) { lightningT = 0; thunder(); }
+  if (lightningT >= 0) {
+    lightningT += dt;
+    const s = lightningT;
+    const f = (s < 0.07 || (s > 0.16 && s < 0.24)) ? 1 : 0;
+    moonLight.intensity = 0.6 + f * 2.2;
+    scene.background.copy(BG).lerp(new THREE.Color(0x6070b0), f * 0.4);
+    if (s > 0.4) { lightningT = -1; lightningAt = t + rand(14, 26); moonLight.intensity = 0.6; scene.background.copy(BG); }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Mensajes de ánimo
+// ---------------------------------------------------------------------------
+const MENSAJES = [
+  NOMBRE ? `Que te mejores pronto, ${NOMBRE} 💛` : 'Que te mejores pronto 💛',
+  'Tecito, mantita y mucho descanso ☕',
+  'Hasta los gatos rockeros se resfrían 🐱🎸',
+  'Stay alive |-/',
+  'Prometo no hacer mucho ruido… bueno, un poquito 🥁',
+  'Ánimo: el resfriado se va, el rock se queda 🤘',
+  'Pronto vas a estar de vuelta, a todo volumen 🔊'
+];
+const msgEl = document.getElementById('mensaje');
+let msgIdx = -1;
+function nextMessage() {
+  msgEl.style.opacity = '0';
+  setTimeout(() => {
+    msgIdx = (msgIdx + 1) % MENSAJES.length;
+    msgEl.textContent = MENSAJES[msgIdx];
+    msgEl.style.opacity = '1';
+  }, 900);
+}
+setTimeout(() => { nextMessage(); setInterval(nextMessage, 6500); }, 4000);
+
+// ---------------------------------------------------------------------------
+// Interacción
+// ---------------------------------------------------------------------------
+const interactives = [cat, mug, tissues, record, amp, guitar];
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+let downX = 0, downY = 0;
+renderer.domElement.addEventListener('pointerdown', (e) => { downX = e.clientX; downY = e.clientY; ensureAudio(); });
+renderer.domElement.addEventListener('pointerup', (e) => {
+  if (Math.hypot(e.clientX - downX, e.clientY - downY) > 6) return;
+  pointer.set((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
+  raycaster.setFromCamera(pointer, camera);
+  const hit = raycaster.intersectObjects(interactives, true)[0];
+  if (!hit) return;
+  let o = hit.object;
+  while (o && !o.userData.kind) o = o.parent;
+  if (!o) return;
+  const p = hit.point.clone();
+  switch (o.userData.kind) {
+    case 'gato': petCat(); break;
+    case 'te':
+      steamBoost = 1.2;
+      spawnText('tecito calientito ☕', p.add(new THREE.Vector3(0, 0.5, 0)), { color: '#ffd23f', height: 0.16 });
+      break;
+    case 'panuelos':
+      spawnText('toma un pañuelito 🤍', p.add(new THREE.Vector3(0, 0.45, 0)), { color: '#ffffff', height: 0.16 });
+      break;
+    case 'tocadiscos': toggleMusic(); spawnNote(p.add(new THREE.Vector3(0, 0.3, 0))); break;
+    case 'amp':
+      powerChord();
+      spawnText('🤘 ROCK 🤘', p.clone().add(new THREE.Vector3(0, 0.5, 0)), { color: '#ff3b4f', height: 0.24 });
+      for (let i = 0; i < 4; i++) spawnNote(p);
+      break;
+  }
+});
+btnMusica.addEventListener('click', toggleMusic);
+document.getElementById('btnAchu').addEventListener('click', () => { ensureAudio(); triggerSneeze(); });
+let autoRotate = false;
+const btnGiro = document.getElementById('btnGiro');
+btnGiro.addEventListener('click', () => {
+  autoRotate = !autoRotate;
+  controls.autoRotate = autoRotate;
+  btnGiro.textContent = '⟳ Giro: ' + (autoRotate ? 'Sí' : 'No');
+});
+
+// ---------------------------------------------------------------------------
+// Post-procesado
+// ---------------------------------------------------------------------------
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+composer.addPass(new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.6, 0.5, 0.62));
+composer.addPass(new OutputPass());
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  composer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ---------------------------------------------------------------------------
+// Bucle principal
+// ---------------------------------------------------------------------------
+const clock = new THREE.Clock();
+let first = true, noteTimer = 0;
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const t = clock.getElapsedTime();
+
+  if (intro.active) {
+    intro.t += dt;
+    const k = clamp01(intro.t / intro.dur);
+    const e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
+    bezier(intro.p, e, camera.position);
+    bezier(intro.q, e, controls.target);
+    camera.lookAt(controls.target);
+    if (k >= 1) { intro.active = false; controls.enabled = true; controls.autoRotate = autoRotate; }
+  } else {
+    controls.update();
+  }
+
+  updateRain(dt);
+  updateCat(t, dt);
+  updateSteam(t, dt);
+  updateFx(dt, t);
+  updateLightning(t, dt);
+
+  // Música: tocadiscos, ecualizador, parlante y luces al ritmo
+  const bp = beatPhase();
+  const pulse = bp >= 0 ? Math.exp(-bp * 5) : 0;
+  if (musicOn) platter.rotation.y -= dt * 3.5;
+  eqBars.forEach((b, i) => {
+    const target = bp >= 0 ? 0.06 + (0.18 + 0.16 * Math.sin(t * 9 + i * 1.7) + 0.12 * Math.sin(t * 13.3 + i)) * (0.5 + pulse) : 0.03;
+    b.scale.y += (Math.max(0.02, target) - b.scale.y) * Math.min(1, dt * 14);
+  });
+  const cs = 1 + pulse * 0.08;
+  cone.scale.set(cs, cs, 1);
+  bulbs.forEach((b, i) => {
+    const f = bp >= 0 ? 0.6 + pulse * 1.2 * ((i % 2) ? 1 : 0.5) : 0.85 + Math.sin(t * 1.5 + b.ph) * 0.25;
+    b.mat.color.copy(b.base).multiplyScalar(1.4 * f);
+  });
+  warm.intensity = 5 + pulse * 3;
+  if (musicOn) {
+    noteTimer -= dt;
+    if (noteTimer <= 0) {
+      noteTimer = SPB * 2;
+      spawnNote(amp.position.clone().add(new THREE.Vector3(0, 1.1, 0)));
+      spawnNote(record.position.clone().add(new THREE.Vector3(0, 1.0, 0)));
+    }
+  }
+
+  composer.render();
+
+  if (first) {
+    first = false;
+    const l = document.getElementById('cargando');
+    l.style.opacity = '0';
+    setTimeout(() => l.remove(), 1600);
+  }
+}
+animate();
+</script>
+</body>
+</html>
